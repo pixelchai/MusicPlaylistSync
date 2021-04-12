@@ -1,10 +1,12 @@
 import sqlite3
 import os
 import argparse
+import logging
 
 DEBUG = False
 DEBUG_PLAYLIST_ID = "PL-VqEBG5SiA2oBlTXeCzi4bPSi3GivOoq"
 
+logger = logging.getLogger('MusicPlaylistSync')
 parser = argparse.ArgumentParser()
 
 def row_factory(*args, **kwargs):
@@ -23,14 +25,14 @@ class Database:
 
         if overwrite and existed:
             os.remove(Database.PATH)
-            print("Overwrite flag so deleted existing db")
+            logger.warning("Overwrite flag so deleted existing db")
             existed = False
 
         self._conn = sqlite3.connect(Database.PATH)
         self._c = self._conn.cursor()
 
         if trace:
-            self._conn.set_trace_callback(print)
+            self._conn.set_trace_callback(logger.debug)
 
         self._c.execute("PRAGMA foreign_keys = ON")
         self._c.row_factory = row_factory
@@ -67,7 +69,7 @@ class Database:
         self._c.execute("INSERT OR REPLACE INTO Meta(version) "
                         "VALUES (?)", (Database.CURRENT_VERSION,))
         self._conn.commit()
-        print("Schema initialised")
+        logger.info("Schema initialised")
 
     def set_playlist_id(self, playlist_id):
         self._c.execute("UPDATE Meta SET playlist_id=?", (playlist_id,))
@@ -83,18 +85,17 @@ class Downloader:
 
         if playlist_id is not None:
             self.db.set_playlist_id(playlist_id)
-            print("Set playlist id from command line!")
+            logger.info("Set playlist id from command line!")
 
         if self.db.get_playlist_id() is None:
             if DEBUG:
                 self.db.set_playlist_id(DEBUG_PLAYLIST_ID)
-                print("Set to debug playlist id")
+                logger.warning("Set to debug playlist id")
             else:
-                print("The playlist id has not been set! "
-                      "Please provide a youtube playlist id")
+                logger.warning("The playlist id has not been set! "
+                               "Please provide a youtube playlist id.")
                 print(parser.format_help())
                 exit(-1)
-
 
     def __enter__(self):
         return self
@@ -105,17 +106,44 @@ class Downloader:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    def index_existing(self):
+        logger.info("indexing existing files...")
+        logger.debug("TODO")
+        logger.info("indexing done!")
 
-def main():
+    def pull(self):
+        logger.info("pulling...")
+
+        logger.info("pulling done!")
+
+
+def main_setup():
+    # logging
+    logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
+
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(asctime)s %(levelname)s: \t%(message)s',
+                                  datefmt='%Y-%m-%d %H:%M:%S')
+    ch.setFormatter(formatter)
+
+    if not logger.hasHandlers():
+        logger.addHandler(ch)
+
+    # argument parsing
     parser.add_argument('playlist_id', default=None, nargs='?',
                         help="youtube playlist id")
     parser.add_argument('-x', '--overwrite', default=False, action='store_true',
                         help="whether to overwrite the database, if it exists")
-    parser.add_argument('-t', '--trace', default=False, action='store_true',
+    parser.add_argument('-t', '--trace', default=DEBUG, action='store_true',
                         help="trace SQL commands")
+
+def main():
+    main_setup()
     args = vars(parser.parse_args())
+
     with Downloader(**args) as d:
-        pass
+        d.index_existing()
 
 
 if __name__ == '__main__':
