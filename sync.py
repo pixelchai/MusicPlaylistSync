@@ -7,8 +7,11 @@ import json
 import shlex
 import hashlib
 import itertools
-from mutagen.id3 import ID3
+import tempfile
+import string
 from pathlib import Path
+from youtube_dl import YoutubeDL
+from mutagen.id3 import ID3
 
 DEBUG = True
 DEBUG_PLAYLIST_ID = "PL-VqEBG5SiA2oBlTXeCzi4bPSi3GivOoq"
@@ -35,14 +38,9 @@ def afcache(func):
         return self._cache[key]
     return wrapper
 
-class AudioFile:
-    def __init__(self, path):
-        self.path = path
-        self._cache = {}
-
-
+class Utils:
     @staticmethod
-    def _run(cmd, stdin=None):
+    def run(cmd, stdin=None):
         logger.debug("COMMAND: " + cmd)
         try:
             result = subprocess.run(cmd, input=stdin, shell=True, stdout=subprocess.PIPE)
@@ -50,17 +48,23 @@ class AudioFile:
         except Exception as ex:
             logger.exception("Error running the following command: " + cmd, exc_info=ex)
 
+
+class AudioFile:
+    def __init__(self, path):
+        self.path = path
+        self._cache = {}
+
     @property
     @afcache
     def fingerprint(self):
-        result = json.loads(self._run("fpcalc -json " + shlex.quote(self.path)))
+        result = json.loads(Utils.run("fpcalc -json " + shlex.quote(self.path)))
         self._cache.update(result)
         return result["fingerprint"]
 
     @property
     @afcache
     def duration(self):
-        result = self._run("ffprobe -v error "
+        result = Utils.run("ffprobe -v error "
                            "-show_entries format=duration "
                            "-of default=noprint_wrappers=1:nokey=1 "
                            + shlex.quote(self.path))
@@ -217,6 +221,25 @@ class Downloader:
         self.db.commit()
         logger.info("Verifying database filepaths done!")
 
+    def _insert_song_from_filesystem(self, file, filepath=None, **extra):
+        if filepath is None:
+            filepath = Path(file).relative_to(".").as_posix()
+
+        af = AudioFile(str(file))
+        try:
+            payload = {
+                "fingerprint": af.fingerprint,
+                "hash": af.hash,
+                "filepath": filepath,
+                "duration": af.duration,
+                "rating": af.rating
+            }
+            payload.update(extra)
+            self.db.add_song(payload)
+            logger.debug("Inserted: " + str(file))
+        except sqlite3.IntegrityError as ex:
+            logger.warning("Skipped inserting exceptional file: " + str(file) + ". Reason: " + str(ex))
+
     def index_filesystem(self):
         logger.info("Indexing filesystem...")
 
@@ -226,25 +249,54 @@ class Downloader:
             existing_id = self.db.get_song_id("filepath", filepath)
 
             if existing_id is None:
-                af = AudioFile(str(file))
-                try:
-                    self.db.add_song({
-                        "fingerprint": af.fingerprint,
-                        "hash": af.hash,
-                        "filepath": filepath,
-                        "duration": af.duration,
-                        "rating": af.rating
-                    })
-                    logger.debug("Inserted: " + str(file))
-                except sqlite3.IntegrityError as ex:
-                    logger.warning("Skipped inserting exceptional file: " + str(file) + ". Reason: " + str(ex))
+                self._insert_song_from_filesystem(file, filepath)
 
         self.db.commit()
         logger.info("Indexing filesystem done!")
 
+    def _get_playlist_info(self):
+        with YoutubeDL({"extract_flat": True}) as ytdl:
+            playlist_info = ytdl.extract_info(
+                "https://www.youtube.com/playlist?list=" + self.db.get_playlist_id()
+            )
+
+        logger.info("Loaded playlist info: {}".format(playlist_info.get("title", "??")))
+        return playlist_info
+
+    @staticmethod
+    def _download_from_url(url, name) -> str:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with YoutubeDL({"outtmpl": os.path.join(tmpdir, "out")}) as ytdl:
+                ytdl.download([url])
+
+                file_names = os.listdir(tmpdir)
+                if len(file_names) > 0:
+                    logger.warning("YouTubeDL unexpectedly produced more than one output file!")
+
+                safe_name = "".join(((x if x in string.digits + string.ascii_letters else "_") for x in name))
+                out_path = os.path.join("mps", safe_name) + ".mp3"
+                Utils.run("ffmpeg -y -i {} {}".format(
+                    shlex.quote(os.path.join(tmpdir, file_names[0])),
+                    shlex.quote(out_path)
+                ))
+
+                if not os.path.isfile(out_path):
+                    raise RuntimeError("FFMpeg did not produce file!")
+
+                return Path(out_path).relative_to(".").as_posix()
+
     def pull(self):
-        logger.info("pulling...")
-        logger.info("pulling done!")
+        logger.info("Pulling...")
+
+        playlist_info = self._get_playlist_info()
+        for entry in playlist_info["entries"]:
+            youtube_id = entry["id"]
+            existing_id = self.db.get_song_id("youtube_id", youtube_id)
+            if existing_id is None:
+                out_path = self._download_from_url(entry["url"], entry["title"])
+                self._insert_song_from_filesystem(out_path, youtube_id=str(youtube_id), rating=None)
+
+        logger.info("Pulling done!")
 
 
 def main_setup():
@@ -275,6 +327,7 @@ def main():
     with Downloader(**args) as d:
         d.verify_filepaths()
         d.index_filesystem()
+        d.pull()
 
 
 if __name__ == '__main__':
