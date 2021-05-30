@@ -25,11 +25,13 @@ FINGERPRINT_SIMILARITY_THRESH = 10
 logger = logging.getLogger('MusicPlaylistSync')
 parser = argparse.ArgumentParser()
 
+
 def row_factory(*args, **kwargs):
     """
     allows for the database cursor to yield dictionary objects, which are easier to work with
     """
     return dict(sqlite3.Row(*args, **kwargs))
+
 
 def afcache(func):
     def wrapper(self, *args, **kwargs):
@@ -41,7 +43,9 @@ def afcache(func):
 
         # logger.debug(f"AudioFile: Got \"{key}\"")
         return self._cache[key]
+
     return wrapper
+
 
 class Utils:
     @staticmethod
@@ -133,7 +137,7 @@ class AudioFile:
     def rating(self):
         song_file = ID3(self.path)
         for popm in song_file.getall('POPM'):
-            return round(popm.rating / 255 * 10)/10
+            return round(popm.rating / 255 * 10) / 10
         return None
 
     @property
@@ -147,6 +151,7 @@ class AudioFile:
             for n in iter(lambda: f.readinto(mv), 0):
                 h.update(mv[:n])
         return h.hexdigest()
+
 
 class Database:
     PATH = "mps.db"
@@ -188,7 +193,7 @@ class Database:
             version TEXT,
             playlist_id TEXT
         );
-        
+
         CREATE TABLE IF NOT EXISTS Songs (
             id INTEGER PRIMARY KEY NOT NULL UNIQUE,
             fingerprint TEXT UNIQUE,
@@ -237,10 +242,11 @@ class Database:
 
     def update_song(self, id_, payload):
         set_clause = ",".join((f"{x}=?" for x in payload.keys()))
-        return self._c.execute(f"UPDATE Songs SET {set_clause} WHERE id=?", (*payload.values(), id_, ))
+        return self._c.execute(f"UPDATE Songs SET {set_clause} WHERE id=?", (*payload.values(), id_,))
 
     def commit(self):
         self._conn.commit()
+
 
 class Downloader:
     def __init__(self, playlist_id, **kwargs):
@@ -369,7 +375,7 @@ class Downloader:
 
             ytdl_out_path = os.path.join(temp_dir.name, file_names[0])
 
-            safe_name = Utils.sanitise_filename(name)
+            safe_name = Utils.sanitise_filename(name).replace("/", "∕").replace("\\", "＼")
             out_path = os.path.join(temp_dir.name, safe_name + ".mp3")
 
             if os.path.splitext(ytdl_out_path)[1] != '.mp3':
@@ -444,6 +450,7 @@ def logging_setup():
     if not logger.hasHandlers():
         logger.addHandler(ch)
 
+
 def parser_setup():
     # argument parsing
     parser.add_argument('playlist_id', default=None, nargs='?',
@@ -454,6 +461,7 @@ def parser_setup():
                         help="trace SQL commands")
     parser.add_argument('-d', '--debug', default=DEBUG, action='store_true',
                         help="enable debug logging")
+
 
 def main():
     parser_setup()
