@@ -164,6 +164,12 @@ class Database:
         placeholders = ",".join(("?" for _ in range(len(data))))
         self._c.execute(f"INSERT INTO Songs({column_names}) VALUES({placeholders})", tuple(data.values()))
 
+    def delete_song(self, id_to_delete):
+        self._c.execute("DELETE FROM Songs WHERE id=?", (id_to_delete,))
+
+    def get_songs(self):
+        return self._c.execute("SELECT * FROM Songs")
+
     def commit(self):
         self._conn.commit()
 
@@ -193,6 +199,23 @@ class Downloader:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
+    def verify_filepaths(self):
+        logger.info("Verifying database filepaths...")
+
+        ids_to_delete = []
+        for song_row in self.db.get_songs():
+            path = Path(song_row["filepath"])
+
+            if not path.is_file():
+                ids_to_delete.append(song_row["id"])
+                logger.info("Deleting row for nonexistent filepath: " + str(path))
+
+        for id_to_delete in ids_to_delete:
+            self.db.delete_song(id_to_delete)
+
+        self.db.commit()
+        logger.info("Verifying database filepaths done!")
 
     def index_filesystem(self):
         logger.info("Indexing filesystem...")
@@ -250,6 +273,7 @@ def main():
     args = vars(parser.parse_args())
 
     with Downloader(**args) as d:
+        d.verify_filepaths()
         d.index_filesystem()
 
 
