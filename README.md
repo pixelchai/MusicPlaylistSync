@@ -22,7 +22,13 @@ The playlist_id only needs to be provided on the first usage.
 On subsequent usages, this data will be stored in the `mps.db` sqlite database created by the script, and you should be able to simply run `python3 sync.py`.
 
 # What it Does
-The script has three main stages, outlined below:
+The script has three main stages, outlined below, and is programmatically invoked as follows:
+```python
+with Downloader(**args) as d:
+  d.verify_filepaths()
+  d.index_filesystem()
+  d.pull()
+```
 
 ### 1: File Paths Verification
 The script goes through all the songs stored in the `mps.db` database (if it exists) and checks whether they still are present in the filesystem (they might have been deleted/renamed externally).
@@ -35,6 +41,9 @@ Any songs which are in the filesystem but not in the database will be stored in 
 ### 3: Pulling (Downloading)
 A list of ids for each song in the provided playlist is retrieved. Songs with ids that are not already present in the database are downloaded into `mps/`, have their fingerprints computed and are stored in the database.
 If a song has a fingerprint that matches one already in the database, the record in the database is updated with its song id, and will therefore not be downloaded again on subsequent invocations of the script.
+
+### Note
+Note: the script, by design, does not make any effort to remove songs which may be in the filesystem but not in the provided playlist (as this is not always desirable).
 
 # Installation
 Install `chromaprint` and `ffmpeg`, making sure they are accessible from your PATH. Then install the pip dependencies as shown below:
