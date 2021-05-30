@@ -2,9 +2,12 @@ import sqlite3
 import os
 import argparse
 import logging
+import subprocess
+import json
+import shlex
 from pathlib import Path
 
-DEBUG = False
+DEBUG = True
 DEBUG_PLAYLIST_ID = "PL-VqEBG5SiA2oBlTXeCzi4bPSi3GivOoq"
 AUDIO_EXTENSIONS = ["mp3", "wav", "flac", "aac", "ogg", "wma"]
 
@@ -20,13 +23,45 @@ def row_factory(*args, **kwargs):
 class AudioFile:
     def __init__(self, path):
         self.path = path
-        self._data = {}
+
+        # data is lazily loaded as required
+        self._cache = {}
+        self._data_src_map = {
+            "fingerprint": self._parse_fpcalc,
+            "duration": self._parse_fpcalc
+        }
+
+    # def cache(self, func):
+    #     def wrapper():
+    #         key = func.__name__
+    #         func()
+    #
+    #     return wrapper
+
 
     def __getitem__(self, item):
+        if item not in self._data_src_map:
+            raise KeyError
+
+        if item not in self._data:
+            target_method = self._data_src_map[item]
+            logger.debug(f"AudioFile: Running \"{target_method.__name__}\" for \"{item}\"")
+            target_method()
+
         return self._data[item]
 
-    def parse_fingerprint(self):
-        pass
+    @staticmethod
+    def _run(cmd, stdin=None):
+        logger.debug("COMMAND: " + cmd)
+        try:
+            result = subprocess.run(cmd, input=stdin, shell=True, stdout=subprocess.PIPE)
+            return result.stdout
+        except Exception as ex:
+            logger.exception("Error running the following command: " + cmd, exc_info=ex)
+
+    def _parse_fpcalc(self):
+        result = json.loads(self._run("fpcalc -json " + shlex.quote(self.path)))
+        self._data.update(result)
 
 
 class Database:
@@ -159,8 +194,10 @@ def main():
     main_setup()
     args = vars(parser.parse_args())
 
-    with Downloader(**args) as d:
-        d.index_existing()
+    # with Downloader(**args) as d:
+    #     d.index_existing()
+    af = AudioFile("mps/burbank.mp3")
+    print(af["fingerprint"])
 
 
 if __name__ == '__main__':
