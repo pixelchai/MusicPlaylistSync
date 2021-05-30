@@ -6,6 +6,7 @@ import subprocess
 import json
 import shlex
 import hashlib
+import itertools
 from mutagen.id3 import ID3
 from pathlib import Path
 
@@ -149,6 +150,23 @@ class Database:
         for row in self._c.execute("SELECT playlist_id FROM Meta WHERE id=1"):
             return row.get('playlist_id', None)
 
+    def _single_row(self, sql, params):
+        row_generator = self._c.execute(sql, params)
+        for row in self._c.execute(sql, params):
+            return row
+
+    def get_song_id(self, key_name, value):
+        for row in self._c.execute(f"SELECT id FROM Songs WHERE \"{key_name}\"=?", (value,)):
+            return row.get('id', None)
+
+    def add_song(self, data):
+        column_names = ",".join((f"\"{x}\"" for x in data.keys()))
+        placeholders = ",".join(("?" for _ in range(len(data))))
+        self._c.execute(f"INSERT INTO Songs({column_names}) VALUES({placeholders})", tuple(data.values()))
+
+    def commit(self):
+        self._conn.commit()
+
 class Downloader:
     def __init__(self, playlist_id, **kwargs):
         self.db = Database(**kwargs)
@@ -176,14 +194,30 @@ class Downloader:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def index_existing(self):
-        logger.info("indexing existing files...")
+    def index_filesystem(self):
+        logger.info("Indexing filesystem...")
 
-        files = []
-        for audio_ext in AUDIO_EXTENSIONS:
-            files.extend(Path().rglob("*." + audio_ext))
+        for file in itertools.chain(*(Path().rglob("*." + audio_ext) for audio_ext in AUDIO_EXTENSIONS)):
 
-        logger.info("indexing done!")
+            filepath = file.relative_to(".").as_posix()
+            existing_id = self.db.get_song_id("filepath", filepath)
+
+            if existing_id is None:
+                af = AudioFile(str(file))
+                try:
+                    self.db.add_song({
+                        "fingerprint": af.fingerprint,
+                        "hash": af.hash,
+                        "filepath": filepath,
+                        "duration": af.duration,
+                        "rating": af.rating
+                    })
+                    logger.debug("Inserted: " + str(file))
+                except sqlite3.IntegrityError as ex:
+                    logger.warning("Skipped inserting exceptional file: " + str(file) + ". Reason: " + str(ex))
+
+        self.db.commit()
+        logger.info("Indexing filesystem done!")
 
     def pull(self):
         logger.info("pulling...")
@@ -215,10 +249,8 @@ def main():
     main_setup()
     args = vars(parser.parse_args())
 
-    # with Downloader(**args) as d:
-    #     d.index_existing()
-    af = AudioFile("mps/amsterdam.mp3")
-    print(af.hash)
+    with Downloader(**args) as d:
+        d.index_filesystem()
 
 
 if __name__ == '__main__':
