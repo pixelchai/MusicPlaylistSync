@@ -2,23 +2,36 @@ import sqlite3
 import os
 import argparse
 import logging
+from pathlib import Path
 
 DEBUG = False
 DEBUG_PLAYLIST_ID = "PL-VqEBG5SiA2oBlTXeCzi4bPSi3GivOoq"
+AUDIO_EXTENSIONS = ["mp3", "wav", "flac", "aac", "ogg", "wma"]
 
 logger = logging.getLogger('MusicPlaylistSync')
 parser = argparse.ArgumentParser()
 
 def row_factory(*args, **kwargs):
     """
-    allows for the database cursor to yield dictionary objects, which are easier to use
+    allows for the database cursor to yield dictionary objects, which are easier to work with
     """
     return dict(sqlite3.Row(*args, **kwargs))
 
-# Songs: pk, accoustic hash, youtube id, file path, (md5 [or similar] hash)
+class AudioFile:
+    def __init__(self, path):
+        self.path = path
+        self._data = {}
+
+    def __getitem__(self, item):
+        return self._data[item]
+
+    def parse_fingerprint(self):
+        pass
+
+
 class Database:
     PATH = "mps.db"
-    CURRENT_VERSION = "0.2.0"
+    CURRENT_VERSION = "0.3.0"
 
     def __init__(self, overwrite, trace):
         existed = os.path.isfile(Database.PATH)
@@ -63,7 +76,8 @@ class Database:
             hash TEXT UNIQUE,
             youtube_id TEXT UNIQUE,
             filepath TEXT UNIQUE,
-            duration REAL
+            duration REAL,
+            rating REAL
         );
         """)
         self._c.execute("INSERT OR REPLACE INTO Meta(version) "
@@ -108,12 +122,15 @@ class Downloader:
 
     def index_existing(self):
         logger.info("indexing existing files...")
-        logger.debug("TODO")
+
+        files = []
+        for audio_ext in AUDIO_EXTENSIONS:
+            files.extend(Path().rglob("*." + audio_ext))
+
         logger.info("indexing done!")
 
     def pull(self):
         logger.info("pulling...")
-
         logger.info("pulling done!")
 
 
