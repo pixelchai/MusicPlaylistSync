@@ -5,6 +5,8 @@ import logging
 import subprocess
 import json
 import shlex
+import hashlib
+from mutagen.id3 import ID3
 from pathlib import Path
 
 DEBUG = True
@@ -25,10 +27,10 @@ def afcache(func):
         key = func.__name__
 
         if key not in self._cache:
-            logger.debug(f"AudioFile: Running \"{key}\"")
-            self._cache[key] = func(self)
+            # logger.debug(f"AudioFile: Running \"{key}\"")
+            self._cache[key] = func(self, *args, **kwargs)
 
-        logger.debug(f"AudioFile: Got \"{key}\"")
+        # logger.debug(f"AudioFile: Got \"{key}\"")
         return self._cache[key]
     return wrapper
 
@@ -57,10 +59,31 @@ class AudioFile:
     @property
     @afcache
     def duration(self):
-        result = self._run("ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "
+        result = self._run("ffprobe -v error "
+                           "-show_entries format=duration "
+                           "-of default=noprint_wrappers=1:nokey=1 "
                            + shlex.quote(self.path))
         return round(float(result) * 100) / 100
 
+    @property
+    @afcache
+    def rating(self):
+        song_file = ID3(self.path)
+        for popm in song_file.getall('POPM'):
+            return round(popm.rating / 255 * 10)/10
+        return None
+
+    @property
+    @afcache
+    def hash(self):
+        # https://stackoverflow.com/a/44873382
+        h = hashlib.sha256()
+        b = bytearray(128 * 1024)
+        mv = memoryview(b)
+        with open(self.path, 'rb', buffering=0) as f:
+            for n in iter(lambda: f.readinto(mv), 0):
+                h.update(mv[:n])
+        return h.hexdigest()
 
 class Database:
     PATH = "mps.db"
@@ -194,9 +217,8 @@ def main():
 
     # with Downloader(**args) as d:
     #     d.index_existing()
-    af = AudioFile("mps/burbank.mp3")
-    print(af.fingerprint)
-    print(af.duration)
+    af = AudioFile("mps/amsterdam.mp3")
+    print(af.hash)
 
 
 if __name__ == '__main__':
