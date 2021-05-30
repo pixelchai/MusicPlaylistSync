@@ -12,6 +12,7 @@ import unicodedata
 import shutil
 import time
 import re
+from datetime import datetime
 from pathlib import Path
 from youtube_dl import YoutubeDL
 from mutagen.id3 import ID3
@@ -20,7 +21,8 @@ from Levenshtein import distance
 DEBUG = False
 AUDIO_EXTENSIONS = ["mp3", "wav", "flac", "aac", "ogg", "wma"]
 DIR_OUTPUT = "mps"
-FINGERPRINT_SIMILARITY_THRESH = 10
+DIR_LOGS = "logs"
+FINGERPRINT_SIMILARITY_THRESH = 2600
 
 logger = logging.getLogger('MusicPlaylistSync')
 parser = argparse.ArgumentParser()
@@ -120,7 +122,8 @@ class AudioFile:
                 buf += line
 
         result = json.loads(buf)
-        self._cache.update(result)
+        if 'duration' in result:
+            self._cache['duration'] = round(result["duration"] / 3) * 3
         return result["fingerprint"]
 
     @property
@@ -130,7 +133,7 @@ class AudioFile:
                            "-show_entries format=duration "
                            "-of default=noprint_wrappers=1:nokey=1 "
                            + shlex.quote(self.path))
-        return round(float(result) * 100) / 100
+        return round(float(result) / 3) * 3
 
     @property
     @afcache
@@ -439,16 +442,22 @@ class Downloader:
 
 def logging_setup():
     # logging
-    logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
+    logger.setLevel(logging.DEBUG)
 
     ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG)
+    ch.setLevel(logging.DEBUG if DEBUG else logging.INFO)
     formatter = logging.Formatter('%(asctime)s %(levelname)s: \t%(message)s',
                                   datefmt='%Y-%m-%d %H:%M:%S')
     ch.setFormatter(formatter)
 
+    os.makedirs(DIR_LOGS, exist_ok=True)
+    fh = logging.FileHandler(filename=os.path.join(DIR_LOGS, datetime.utcnow().strftime("%Y_%m_%d.log")))
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(formatter)
+
     if not logger.hasHandlers():
         logger.addHandler(ch)
+        logger.addHandler(fh)
 
 
 def parser_setup():
