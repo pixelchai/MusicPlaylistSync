@@ -10,6 +10,7 @@ import itertools
 import tempfile
 import unicodedata
 import shutil
+import re
 from pathlib import Path
 from youtube_dl import YoutubeDL
 from mutagen.id3 import ID3
