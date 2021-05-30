@@ -10,6 +10,7 @@ import itertools
 import tempfile
 import unicodedata
 import shutil
+import time
 import re
 from pathlib import Path
 from youtube_dl import YoutubeDL
@@ -109,7 +110,12 @@ class AudioFile:
     @property
     @afcache
     def fingerprint(self):
-        result = json.loads(Utils.run("fpcalc -json " + shlex.quote(self.path)))
+        buf = ""
+        for line in Utils.run("fpcalc -json " + shlex.quote(self.path)).decode('utf8').splitlines():
+            if not line.startswith("ERROR: "):
+                buf += line
+
+        result = json.loads(buf)
         self._cache.update(result)
         return result["fingerprint"]
 
@@ -146,7 +152,7 @@ class Database:
     PATH = "mps.db"
     CURRENT_VERSION = "0.3.0"
 
-    def __init__(self, overwrite, trace):
+    def __init__(self, overwrite, trace, **kwargs):
         existed = os.path.isfile(Database.PATH)
 
         if overwrite and existed:
@@ -297,8 +303,7 @@ class Downloader:
 
     def index_filesystem(self):
         logger.info("Indexing filesystem...")
-
-        for file in itertools.chain(*(Path().rglob("*." + audio_ext) for audio_ext in AUDIO_EXTENSIONS)):
+        for i, file in enumerate(itertools.chain(*(Path().rglob("*." + audio_ext) for audio_ext in AUDIO_EXTENSIONS))):
 
             filepath = file.relative_to(".").as_posix()
             existing_id = self.db.get_song_id("filepath", filepath)
@@ -309,6 +314,9 @@ class Downloader:
                     self._insert_audio_file(af, filepath)
                 except sqlite3.IntegrityError:
                     pass
+
+            if i % 20 == 0:
+                self.db.commit()
 
         self.db.commit()
         logger.info("Indexing filesystem done!")
@@ -330,24 +338,47 @@ class Downloader:
     def _download_from_url(url, name):
         temp_dir = tempfile.TemporaryDirectory()
         with YoutubeDL({
-            'format': 'bestaudio',
-            "outtmpl": os.path.join(temp_dir.name, "out"),
+            'format': 'bestaudio/best',
+            'writethumbnail': True,
+            'postprocessors': [
+                {
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                },
+                {'key': 'EmbedThumbnail'},
+                {'key': 'FFmpegMetadata'}
+            ],
+            "outtmpl": os.path.join(temp_dir.name, "out.%(ext)s"),
             'quiet': True,
             'no_warnings': True,
         }) as ytdl:
             logger.info(f"Downloading: {url}: {name}")
-            ytdl.download([url])
+            for i in range(6):
+                try:
+                    ytdl.download([url])
+                    break
+                except:
+                    time.sleep(5)
+            else:
+                logger.warning("TIMEOUT: {}".format(url))
 
             file_names = os.listdir(temp_dir.name)
             if len(file_names) > 1:
                 logger.warning("YouTubeDL unexpectedly produced more than one output file!")
 
+            ytdl_out_path = os.path.join(temp_dir.name, file_names[0])
+
             safe_name = Utils.sanitise_filename(name)
             out_path = os.path.join(temp_dir.name, safe_name + ".mp3")
-            Utils.run("ffmpeg -y -i {} {}".format(
-                shlex.quote(os.path.join(temp_dir.name, file_names[0])),
-                shlex.quote(out_path)
-            ))
+
+            if os.path.splitext(ytdl_out_path)[1] != '.mp3':
+                Utils.run("ffmpeg -y -i {} {}".format(
+                    shlex.quote(ytdl_out_path),
+                    shlex.quote(out_path)
+                ))
+            else:
+                shutil.move(ytdl_out_path, out_path)
 
             if not os.path.isfile(out_path):
                 raise RuntimeError("FFMpeg did not produce file!")
@@ -400,7 +431,7 @@ class Downloader:
         logger.info("Pulling done!")
 
 
-def main_setup():
+def logging_setup():
     # logging
     logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
 
@@ -413,6 +444,7 @@ def main_setup():
     if not logger.hasHandlers():
         logger.addHandler(ch)
 
+def parser_setup():
     # argument parsing
     parser.add_argument('playlist_id', default=None, nargs='?',
                         help="youtube playlist id")
@@ -420,10 +452,16 @@ def main_setup():
                         help="whether to overwrite the database, if it exists")
     parser.add_argument('-t', '--trace', default=DEBUG, action='store_true',
                         help="trace SQL commands")
+    parser.add_argument('-d', '--debug', default=DEBUG, action='store_true',
+                        help="enable debug logging")
 
 def main():
-    main_setup()
+    parser_setup()
     args = vars(parser.parse_args())
+
+    global DEBUG
+    DEBUG = args.get("debug", DEBUG)
+    logging_setup()
 
     with Downloader(**args) as d:
         d.verify_filepaths()
