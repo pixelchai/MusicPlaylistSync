@@ -9,13 +9,16 @@ import hashlib
 import itertools
 import tempfile
 import string
+import shutil
 from pathlib import Path
 from youtube_dl import YoutubeDL
 from mutagen.id3 import ID3
+from Levenshtein import distance
 
-DEBUG = True
+DEBUG = False
 DEBUG_PLAYLIST_ID = "PL-VqEBG5SiA2oBlTXeCzi4bPSi3GivOoq"
 AUDIO_EXTENSIONS = ["mp3", "wav", "flac", "aac", "ogg", "wma"]
+DIR_OUTPUT = "mps"
 
 logger = logging.getLogger('MusicPlaylistSync')
 parser = argparse.ArgumentParser()
@@ -43,7 +46,7 @@ class Utils:
     def run(cmd, stdin=None):
         logger.debug("COMMAND: " + cmd)
         try:
-            result = subprocess.run(cmd, input=stdin, shell=True, stdout=subprocess.PIPE)
+            result = subprocess.run(cmd, input=stdin, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             return result.stdout
         except Exception as ex:
             logger.exception("Error running the following command: " + cmd, exc_info=ex)
@@ -155,7 +158,6 @@ class Database:
             return row.get('playlist_id', None)
 
     def _single_row(self, sql, params):
-        row_generator = self._c.execute(sql, params)
         for row in self._c.execute(sql, params):
             return row
 
@@ -171,8 +173,16 @@ class Database:
     def delete_song(self, id_to_delete):
         self._c.execute("DELETE FROM Songs WHERE id=?", (id_to_delete,))
 
-    def get_songs(self):
-        return self._c.execute("SELECT * FROM Songs")
+    def get_songs(self, constraints=None):
+        if constraints is None:
+            return self._c.execute("SELECT * FROM Songs")
+        else:
+            where_clause = " AND ".join((f"{x}=?" for x in constraints.keys()))
+            return self._c.execute(f"SELECT * FROM Songs WHERE {where_clause}", tuple(constraints.values()))
+
+    def update_song(self, id_, payload):
+        set_clause = ",".join((f"{x}=?" for x in payload.keys()))
+        return self._c.execute(f"UPDATE Songs SET {set_clause} WHERE id=?", (*payload.values(), id_, ))
 
     def commit(self):
         self._conn.commit()
@@ -221,11 +231,10 @@ class Downloader:
         self.db.commit()
         logger.info("Verifying database filepaths done!")
 
-    def _insert_song_from_filesystem(self, file, filepath=None, **extra):
+    def _insert_audio_file(self, af: AudioFile, filepath=None, **extra):
         if filepath is None:
-            filepath = Path(file).relative_to(".").as_posix()
+            filepath = Path(af.path).relative_to(".").as_posix()
 
-        af = AudioFile(str(file))
         try:
             payload = {
                 "fingerprint": af.fingerprint,
@@ -236,9 +245,10 @@ class Downloader:
             }
             payload.update(extra)
             self.db.add_song(payload)
-            logger.debug("Inserted: " + str(file))
+            logger.info("Inserted: " + str(af.path))
         except sqlite3.IntegrityError as ex:
-            logger.warning("Skipped inserting exceptional file: " + str(file) + ". Reason: " + str(ex))
+            logger.warning("Skipped inserting exceptional file: " + str(af.path) + ". Reason: " + str(ex))
+            raise
 
     def index_filesystem(self):
         logger.info("Indexing filesystem...")
@@ -249,7 +259,11 @@ class Downloader:
             existing_id = self.db.get_song_id("filepath", filepath)
 
             if existing_id is None:
-                self._insert_song_from_filesystem(file, filepath)
+                af = AudioFile(str(file))
+                try:
+                    self._insert_audio_file(af, filepath)
+                except sqlite3.IntegrityError:
+                    pass
 
         self.db.commit()
         logger.info("Indexing filesystem done!")
@@ -264,26 +278,41 @@ class Downloader:
         return playlist_info
 
     @staticmethod
-    def _download_from_url(url, name) -> str:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with YoutubeDL({"outtmpl": os.path.join(tmpdir, "out")}) as ytdl:
-                ytdl.download([url])
+    def _download_from_url(url, name):
+        temp_dir = tempfile.TemporaryDirectory()
+        with YoutubeDL({
+            'format': 'bestaudio',
+            "outtmpl": os.path.join(temp_dir.name, "out"),
+            'quiet': True,
+            'no_warnings': True,
+        }) as ytdl:
+            ytdl.download([url])
 
-                file_names = os.listdir(tmpdir)
-                if len(file_names) > 0:
-                    logger.warning("YouTubeDL unexpectedly produced more than one output file!")
+            file_names = os.listdir(temp_dir.name)
+            if len(file_names) > 1:
+                logger.warning("YouTubeDL unexpectedly produced more than one output file!")
 
-                safe_name = "".join(((x if x in string.digits + string.ascii_letters else "_") for x in name))
-                out_path = os.path.join("mps", safe_name) + ".mp3"
-                Utils.run("ffmpeg -y -i {} {}".format(
-                    shlex.quote(os.path.join(tmpdir, file_names[0])),
-                    shlex.quote(out_path)
-                ))
+            safe_name = "".join(((x if x in string.digits + string.ascii_letters else "_") for x in name))
+            out_path = os.path.join(temp_dir.name, safe_name + ".mp3")
+            Utils.run("ffmpeg -y -i {} {}".format(
+                shlex.quote(os.path.join(temp_dir.name, file_names[0])),
+                shlex.quote(out_path)
+            ))
 
-                if not os.path.isfile(out_path):
-                    raise RuntimeError("FFMpeg did not produce file!")
+            if not os.path.isfile(out_path):
+                raise RuntimeError("FFMpeg did not produce file!")
 
-                return Path(out_path).relative_to(".").as_posix()
+            return Path(out_path).as_posix(), temp_dir
+
+    def _check_audio_file_in_db(self, af: AudioFile):
+        for song_row in self.db.get_songs({"duration": af.duration}):
+            fingerprint_distance = distance(song_row["fingerprint"], af.fingerprint)
+            if fingerprint_distance < 2600:
+                af_name = os.path.split(af.path)[1]
+                logger.warning(f"Identified AudioFile already in db w/finger print distance {fingerprint_distance}: "
+                               f"{af_name}")
+                return song_row
+        return None
 
     def pull(self):
         logger.info("Pulling...")
@@ -293,8 +322,23 @@ class Downloader:
             youtube_id = entry["id"]
             existing_id = self.db.get_song_id("youtube_id", youtube_id)
             if existing_id is None:
-                out_path = self._download_from_url(entry["url"], entry["title"])
-                self._insert_song_from_filesystem(out_path, youtube_id=str(youtube_id), rating=None)
+                out_path, temp_dir = self._download_from_url(entry["url"], entry["title"])
+
+                af = AudioFile(out_path)
+                song_row = self._check_audio_file_in_db(af)
+                if song_row is None:
+                    out_name = os.path.split(out_path)[1]
+                    final_path = os.path.join(DIR_OUTPUT, out_name)
+                    shutil.move(af.path, final_path)
+                    af.path = final_path
+                    self._insert_audio_file(af, youtube_id=youtube_id)
+                    self.db.commit()
+                else:
+                    self.db.update_song(song_row["id"], {
+                        "youtube_id": youtube_id
+                    })
+                    self.db.commit()
+                temp_dir.cleanup()
 
         logger.info("Pulling done!")
 
