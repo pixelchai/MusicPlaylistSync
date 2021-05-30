@@ -8,7 +8,7 @@ import shlex
 import hashlib
 import itertools
 import tempfile
-import string
+import unicodedata
 import shutil
 from pathlib import Path
 from youtube_dl import YoutubeDL
@@ -16,9 +16,9 @@ from mutagen.id3 import ID3
 from Levenshtein import distance
 
 DEBUG = False
-DEBUG_PLAYLIST_ID = "PL-VqEBG5SiA2oBlTXeCzi4bPSi3GivOoq"
 AUDIO_EXTENSIONS = ["mp3", "wav", "flac", "aac", "ogg", "wma"]
 DIR_OUTPUT = "mps"
+FINGERPRINT_SIMILARITY_THRESH = 10
 
 logger = logging.getLogger('MusicPlaylistSync')
 parser = argparse.ArgumentParser()
@@ -50,6 +50,54 @@ class Utils:
             return result.stdout
         except Exception as ex:
             logger.exception("Error running the following command: " + cmd, exc_info=ex)
+
+    @staticmethod
+    def sanitise_filename(filename):
+        # from: https://gitlab.com/jplusplus/sanitize-filename
+        """Return a fairly safe version of the filename.
+
+        We don't limit ourselves to ascii, because we want to keep municipality
+        names, etc, but we do want to get rid of anything potentially harmful,
+        and make sure we do not exceed Windows filename length limits.
+        Hence a less safe blacklist, rather than a whitelist.
+        """
+        blacklist = ["\\", "/", ":", "*", "?", "\"", "<", ">", "|", "\0"]
+        reserved = [
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5",
+            "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
+            "LPT6", "LPT7", "LPT8", "LPT9",
+        ]  # Reserved words on Windows
+        filename = "".join(c for c in filename if c not in blacklist)
+        # Remove all charcters below code point 32
+        filename = "".join(c for c in filename if 31 < ord(c))
+        filename = unicodedata.normalize("NFKD", filename)
+        filename = filename.rstrip(". ")  # Windows does not allow these at end
+        filename = filename.strip()
+        if all([x == "." for x in filename]):
+            filename = "__" + filename
+        if filename in reserved:
+            filename = "__" + filename
+        if len(filename) == 0:
+            filename = "__"
+        if len(filename) > 255:
+            parts = re.split(r"/|\\", filename)[-1].split(".")
+            if len(parts) > 1:
+                ext = "." + parts.pop()
+                filename = filename[:-len(ext)]
+            else:
+                ext = ""
+            if filename == "":
+                filename = "__"
+            if len(ext) > 254:
+                ext = ext[254:]
+            maxl = 255 - len(ext)
+            filename = filename[:maxl]
+            filename = filename + ext
+            # Re-check last character (if there was no extension)
+            filename = filename.rstrip(". ")
+            if len(filename) == 0:
+                filename = "__"
+        return filename
 
 
 class AudioFile:
@@ -196,14 +244,10 @@ class Downloader:
             logger.info("Set playlist id from command line!")
 
         if self.db.get_playlist_id() is None:
-            if DEBUG:
-                self.db.set_playlist_id(DEBUG_PLAYLIST_ID)
-                logger.warning("Set to debug playlist id")
-            else:
-                logger.warning("The playlist id has not been set! "
-                               "Please provide a youtube playlist id.")
-                print(parser.format_help())
-                exit(-1)
+            logger.warning("The playlist id has not been set! "
+                           "Please provide a youtube playlist id.")
+            print(parser.format_help())
+            exit(-1)
 
     def __enter__(self):
         return self
@@ -269,7 +313,11 @@ class Downloader:
         logger.info("Indexing filesystem done!")
 
     def _get_playlist_info(self):
-        with YoutubeDL({"extract_flat": True}) as ytdl:
+        with YoutubeDL({
+            "extract_flat": True,
+            'quiet': True,
+            'no_warnings': True,
+        }) as ytdl:
             playlist_info = ytdl.extract_info(
                 "https://www.youtube.com/playlist?list=" + self.db.get_playlist_id()
             )
@@ -286,13 +334,14 @@ class Downloader:
             'quiet': True,
             'no_warnings': True,
         }) as ytdl:
+            logger.info(f"Downloading: {url}: {name}")
             ytdl.download([url])
 
             file_names = os.listdir(temp_dir.name)
             if len(file_names) > 1:
                 logger.warning("YouTubeDL unexpectedly produced more than one output file!")
 
-            safe_name = "".join(((x if x in string.digits + string.ascii_letters else "_") for x in name))
+            safe_name = Utils.sanitise_filename(name)
             out_path = os.path.join(temp_dir.name, safe_name + ".mp3")
             Utils.run("ffmpeg -y -i {} {}".format(
                 shlex.quote(os.path.join(temp_dir.name, file_names[0])),
@@ -307,7 +356,7 @@ class Downloader:
     def _check_audio_file_in_db(self, af: AudioFile):
         for song_row in self.db.get_songs({"duration": af.duration}):
             fingerprint_distance = distance(song_row["fingerprint"], af.fingerprint)
-            if fingerprint_distance < 2600:
+            if fingerprint_distance < FINGERPRINT_SIMILARITY_THRESH:
                 af_name = os.path.split(af.path)[1]
                 logger.warning(f"Identified AudioFile already in db w/finger print distance {fingerprint_distance}: "
                                f"{af_name}")
@@ -316,6 +365,7 @@ class Downloader:
 
     def pull(self):
         logger.info("Pulling...")
+        os.makedirs(DIR_OUTPUT, exist_ok=True)
 
         playlist_info = self._get_playlist_info()
         for entry in playlist_info["entries"]:
@@ -329,6 +379,12 @@ class Downloader:
                 if song_row is None:
                     out_name = os.path.split(out_path)[1]
                     final_path = os.path.join(DIR_OUTPUT, out_name)
+
+                    i = 0
+                    while os.path.isfile(final_path):
+                        final_path = os.path.join(DIR_OUTPUT, str(i) + out_name)
+                        i += 1
+
                     shutil.move(af.path, final_path)
                     af.path = final_path
                     self._insert_audio_file(af, youtube_id=youtube_id)
