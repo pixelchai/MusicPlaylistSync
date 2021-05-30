@@ -20,35 +20,23 @@ def row_factory(*args, **kwargs):
     """
     return dict(sqlite3.Row(*args, **kwargs))
 
+def afcache(func):
+    def wrapper(self, *args, **kwargs):
+        key = func.__name__
+
+        if key not in self._cache:
+            logger.debug(f"AudioFile: Running \"{key}\"")
+            self._cache[key] = func(self)
+
+        logger.debug(f"AudioFile: Got \"{key}\"")
+        return self._cache[key]
+    return wrapper
+
 class AudioFile:
     def __init__(self, path):
         self.path = path
-
-        # data is lazily loaded as required
         self._cache = {}
-        self._data_src_map = {
-            "fingerprint": self._parse_fpcalc,
-            "duration": self._parse_fpcalc
-        }
 
-    # def cache(self, func):
-    #     def wrapper():
-    #         key = func.__name__
-    #         func()
-    #
-    #     return wrapper
-
-
-    def __getitem__(self, item):
-        if item not in self._data_src_map:
-            raise KeyError
-
-        if item not in self._data:
-            target_method = self._data_src_map[item]
-            logger.debug(f"AudioFile: Running \"{target_method.__name__}\" for \"{item}\"")
-            target_method()
-
-        return self._data[item]
 
     @staticmethod
     def _run(cmd, stdin=None):
@@ -59,9 +47,19 @@ class AudioFile:
         except Exception as ex:
             logger.exception("Error running the following command: " + cmd, exc_info=ex)
 
-    def _parse_fpcalc(self):
+    @property
+    @afcache
+    def fingerprint(self):
         result = json.loads(self._run("fpcalc -json " + shlex.quote(self.path)))
-        self._data.update(result)
+        self._cache.update(result)
+        return result["fingerprint"]
+
+    @property
+    @afcache
+    def duration(self):
+        result = self._run("ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "
+                           + shlex.quote(self.path))
+        return round(float(result) * 100) / 100
 
 
 class Database:
@@ -197,7 +195,8 @@ def main():
     # with Downloader(**args) as d:
     #     d.index_existing()
     af = AudioFile("mps/burbank.mp3")
-    print(af["fingerprint"])
+    print(af.fingerprint)
+    print(af.duration)
 
 
 if __name__ == '__main__':
