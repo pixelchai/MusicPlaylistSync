@@ -21,7 +21,7 @@ from Levenshtein import distance
 DEBUG = False
 AUDIO_EXTENSIONS = ["mp3", "wav", "flac", "aac", "ogg", "wma"]
 DIR_OUTPUT = "mps"
-DIR_LOGS = "logs"
+DIR_LOGS = "mps_logs"
 FINGERPRINT_SIMILARITY_THRESH = 2600
 
 logger = logging.getLogger('MusicPlaylistSync')
@@ -55,6 +55,7 @@ class Utils:
         logger.debug("COMMAND: " + cmd)
         try:
             result = subprocess.run(cmd, input=stdin, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            logger.debug("COMMAND OUTPUT: {}".format(str(result.stdout)))
             return result.stdout
         except Exception as ex:
             logger.exception("Error running the following command: " + cmd, exc_info=ex)
@@ -455,9 +456,8 @@ def logging_setup():
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(formatter)
 
-    if not logger.hasHandlers():
-        logger.addHandler(ch)
-        logger.addHandler(fh)
+    logger.addHandler(ch)
+    logger.addHandler(fh)
 
 
 def parser_setup():
@@ -466,7 +466,7 @@ def parser_setup():
                         help="youtube playlist id")
     parser.add_argument('-x', '--overwrite', default=False, action='store_true',
                         help="whether to overwrite the database, if it exists")
-    parser.add_argument('-t', '--trace', default=DEBUG, action='store_true',
+    parser.add_argument('-t', '--trace', default=True, action='store_true',
                         help="trace SQL commands")
     parser.add_argument('-d', '--debug', default=DEBUG, action='store_true',
                         help="enable debug logging")
