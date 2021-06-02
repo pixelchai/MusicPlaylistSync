@@ -23,31 +23,30 @@ class Deduper:
     def build_list(self):
         pairs = {}  # frozenset(song_id, other_song_id): distance
 
-        # remaining_song_ids = collections.deque()
-        # for row in self.db.get_songs():
-        #     remaining_song_ids.append(row["id"])
-        remaining_song_rows = collections.deque()
+        remaining_song_rows = []
         for row in self.db.get_songs():
             remaining_song_rows.append(row)
 
-        total_count = len(remaining_song_rows)
+        remaining_song_rows = list(sorted(remaining_song_rows, key=lambda x: x['duration']))
 
-        with tqdm(total=total_count) as pbar:
-            while len(remaining_song_rows) > 0:
-                song_row = remaining_song_rows.pop()
-                # song_row = tuple(self.db.get_songs({"id": song_id}))[0]
+        while len(remaining_song_rows) > 0:
+            print("Remaining: {:04d}".format(len(remaining_song_rows)))
 
-                for other_song_row in remaining_song_rows:
-                    # other_song_row = tuple(self.db.get_songs({"id": other_song_id}))[0]
-                    pairs[frozenset((song_row['id'], other_song_row['id']))] = distance(
-                        song_row['fingerprint'],
-                        other_song_row['fingerprint']
-                    )
+            song_row = remaining_song_rows.pop(0)
 
-                with open("pairs.pk", "w") as f:
-                    pickle.dump(pairs, f)
+            for other_song_row in remaining_song_rows:
+                if other_song_row["duration"] - song_row["duration"] > 5:
+                    break
 
-                pbar.update(total_count - len(remaining_song_rows))
+                lev_dist = distance(song_row['fingerprint'], other_song_row['fingerprint'])
+                pairs[frozenset((song_row['id'], other_song_row['id']))] = lev_dist
+
+                if lev_dist < 2300:
+                    print(f"Possible pair w/dist={lev_dist}: {song_row['filepath']} \t{other_song_row['filepath']}")
+
+            with open("pairs.pk", "wb") as f:
+                pickle.dump(pairs, f)
+
 
     def __enter__(self):
         return self
