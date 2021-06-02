@@ -4,7 +4,10 @@
 __pycache__/
 .ipynb_checkpoints/
 
-mps/
-mps.db
-mps.db-journal
-mps_logs/
+*
+
+!.gitignore
+!dedup.py
+!README.md
+!requirements.txt
+!sync.py
